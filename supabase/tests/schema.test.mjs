@@ -266,5 +266,125 @@ await asUser(uid);
 const [ro] = await q(`select public.reorder($1) as r`, [order.order_id]);
 assert(ro.r.added === 1, `reorder re-added ${ro.r.added} line(s)`);
 
+console.log('\n--- admin: roles ---');
+await q(`select set_config('request.jwt.claim.sub','',false)`);
+await db.exec(`update public.profiles set role='owner' where id='${uid}'`);
+await asUser(uid);
+const roles = await q(`select public.is_owner() o, public.is_admin() a, public.is_staff() s`);
+assert(roles[0].o && roles[0].a && roles[0].s, 'owner satisfies is_owner/is_admin/is_staff');
+const perm = await q(`select public.has_permission('products') p`);
+assert(perm[0].p === true, 'owner has every permission implicitly');
+
+console.log('\n--- admin: overview ---');
+const [ov] = await q(`select public.admin_overview() as o`);
+assert(typeof ov.o.revenue_today !== 'undefined' && typeof ov.o.revenue_month !== 'undefined',
+  `revenue today/month present: ${ov.o.revenue_today} / ${ov.o.revenue_month}`);
+assert(ov.o.total_products === 24, `product count: ${ov.o.total_products}`);
+assert(Array.isArray(ov.o.low_stock_alerts), `low-stock alerts array (${ov.o.low_stock_alerts.length})`);
+assert(typeof ov.o.open_counts.pending === 'number', 'per-status order counts present');
+
+console.log('\n--- admin: product visibility (§4) ---');
+const [prodRow] = await q(`select id, slug from public.products where slug='bow-bow-shorts-set'`);
+await q(`select public.admin_set_product_visibility($1, false)`, [prodRow.id]);
+const hidden = await q(`select is_active from public.products where id=$1`, [prodRow.id]);
+assert(hidden[0].is_active === false, 'product hidden, not deleted');
+const stillThere = await q(`select count(*)::int n from public.products where id=$1`, [prodRow.id]);
+assert(stillThere[0].n === 1, 'hidden product still stored in Supabase');
+
+// A shopper must not see it.
+await asUser(u2.id);
+await db.exec(`set role authenticated`);
+const shopperSees = await q(`select count(*)::int n from public.products where id=$1`, [prodRow.id]);
+assert(shopperSees[0].n === 0, 'hidden product is invisible to the public store (RLS)');
+await db.exec(`reset role`);
+await asUser(uid);
+await q(`select public.admin_set_product_visibility($1, true)`, [prodRow.id]);
+const shown = await q(`select is_active from public.products where id=$1`, [prodRow.id]);
+assert(shown[0].is_active === true, 'product restored to visible');
+
+console.log('\n--- admin: duplicate + variants (§3, §5) ---');
+const [dup] = await q(`select public.admin_duplicate_product($1) as r`, [prodRow.id]);
+assert(/-copy/.test(dup.r.slug), `duplicated as ${dup.r.slug}`);
+const dupRow = await q(`select is_active from public.products where id=$1`, [dup.r.product_id]);
+assert(dupRow[0].is_active === false, 'duplicate starts hidden so a draft never goes live');
+const dupStock = await q(`select coalesce(sum(stock_quantity),0)::int n from public.product_variants where product_id=$1`,
+  [dup.r.product_id]);
+assert(dupStock[0].n === 0, 'duplicate starts with zero stock');
+
+const [nv] = await q(`select public.admin_upsert_variant($1,'M','Teddy Pink','BJM-TEST-TPK-M',5) as r`,
+  [dup.r.product_id]);
+assert(nv.r.available_quantity === 5, `variant created with available=${nv.r.available_quantity}`);
+const [uv] = await q(`select public.admin_upsert_variant($1,'M','Teddy Pink','BJM-TEST-TPK-M',9,$2) as r`,
+  [dup.r.product_id, nv.r.variant_id]);
+assert(uv.r.stock_quantity === 9, `stock updated to ${uv.r.stock_quantity}`);
+
+// Cannot cut stock below what live orders are holding.
+await db.exec(`update public.product_variants set reserved_quantity=4 where id='${nv.r.variant_id}'`);
+let belowReserved = false;
+try { await q(`select public.admin_upsert_variant($1,'M','Teddy Pink','BJM-TEST-TPK-M',2,$2)`,
+  [dup.r.product_id, nv.r.variant_id]); }
+catch (e) { belowReserved = /STOCK_BELOW_RESERVED/.test(e.message); }
+assert(belowReserved, 'refuses to set stock below reserved quantity');
+let negStock = false;
+try { await q(`select public.admin_upsert_variant($1,'S','Teddy Pink','BJM-NEG',-3)`, [dup.r.product_id]); }
+catch (e) { negStock = /NEGATIVE_STOCK/.test(e.message); }
+assert(negStock, 'refuses negative stock');
+
+console.log('\n--- admin: staff permission gating (§21) ---');
+await q(`select set_config('request.jwt.claim.sub','',false)`);
+await db.exec(`update public.profiles set role='staff', permissions='{}'::jsonb where id='${u2.id}'`);
+await asUser(u2.id);
+assert((await q(`select public.has_permission('products') p`))[0].p === false,
+  'staff with empty permissions has none');
+let staffBlocked = false;
+try { await q(`select public.admin_duplicate_product($1)`, [prodRow.id]); }
+catch (e) { staffBlocked = /FORBIDDEN/.test(e.message); }
+assert(staffBlocked, 'staff without the products permission cannot duplicate');
+
+await q(`select set_config('request.jwt.claim.sub','',false)`);
+await db.exec(`update public.profiles set permissions='{"products":true}'::jsonb where id='${u2.id}'`);
+await asUser(u2.id);
+assert((await q(`select public.has_permission('products') p`))[0].p === true,
+  'granting one permission works');
+assert((await q(`select public.has_permission('loyalty') p`))[0].p === false,
+  'other permissions stay denied');
+
+let roleEscalation = false;
+try { await q(`select public.admin_set_role($1,'owner')`, [u2.id]); }
+catch (e) { roleEscalation = /FORBIDDEN|CANNOT_CHANGE_OWN_ROLE/.test(e.message); }
+assert(roleEscalation, 'staff cannot promote anyone (role changes are owner-only)');
+
+await asUser(uid);
+let selfRole = false;
+try { await q(`select public.admin_set_role($1,'customer')`, [uid]); }
+catch (e) { selfRole = /CANNOT_CHANGE_OWN_ROLE/.test(e.message); }
+assert(selfRole, 'even the owner cannot change their own role');
+const [sr] = await q(`select public.admin_set_role($1,'staff','{"orders":true}'::jsonb) as r`, [u2.id]);
+assert(sr.r.role === 'staff', 'owner can set roles and permissions');
+
+console.log('\n--- admin: reports (§16) ---');
+const [rep] = await q(`select public.admin_sales_report(now() - interval '30 days', now(), 'day') as r`);
+assert(typeof rep.r.totals.revenue !== 'undefined', `sales report totals: ${JSON.stringify(rep.r.totals)}`);
+assert(typeof rep.r.excluded.cancelled === 'number',
+  'cancelled/refunded reported separately, not as revenue');
+const [bs] = await q(`select public.admin_best_sellers(30, 5) as r`);
+assert(Array.isArray(bs.r.products) && Array.isArray(bs.r.sizes) && Array.isArray(bs.r.colors),
+  `best sellers by product/size/colour (${bs.r.products.length} products)`);
+
+console.log('\n--- admin: customers are locked out (§1, §20) ---');
+await q(`select set_config('request.jwt.claim.sub','',false)`);
+await db.exec(`update public.profiles set role='customer', permissions='{}'::jsonb where id='${u2.id}'`);
+await asUser(u2.id);
+for (const [fn, args] of [['admin_overview', ''], ['admin_sales_report', ''],
+                          ['admin_best_sellers', ''], ['admin_dashboard_stats', '']]) {
+  let blocked = false;
+  try { await q(`select public.${fn}(${args})`); } catch (e) { blocked = /FORBIDDEN/.test(e.message); }
+  assert(blocked, `customer calling ${fn}() is refused server-side`);
+}
+let visBlocked = false;
+try { await q(`select public.admin_set_product_visibility($1,false)`, [prodRow.id]); }
+catch (e) { visBlocked = /FORBIDDEN/.test(e.message); }
+assert(visBlocked, 'customer cannot hide a product');
+
 console.log('\nDone.');
 await db.close();
