@@ -560,6 +560,15 @@
 
 <div class="toasts" id="toasts" aria-live="polite"></div>
 
+<script src="js/config.js"></script>
 <script src="script.js"></script>
+<!-- Loads the Supabase SDK and hands it to the storefront. Module scripts are
+     deferred, so script.js has already rendered the page by the time this runs
+     — the live catalogue simply swaps in when it arrives. -->
+<script type="module">
+  import API from './js/supabase/index.js';
+  window.BJmeemAPI = API;
+  window.dispatchEvent(new CustomEvent('bjmeem:api-ready'));
+</script>
 </body>
 </html>

@@ -231,7 +231,10 @@
     ['Marshmallow Cloud Shorts', 'Cloud-print shorts with the softest elastic waist.', 6.9, 0, 'cloud', ['White', 'Pink'], ['cotton-pajamas', 'cute-prints', 'plain-cotton'], 4.4, 37, 200, ['shorts', 'cloud', 'cotton']]
   ];
 
-  const PRODUCTS = RAW.map((r, i) => {
+  // Replaced at runtime by the live Supabase catalogue when the store is
+  // connected (see loadCatalogFromSupabase). Until then this built-in list is
+  // the catalogue, so the site works standalone.
+  let PRODUCTS = RAW.map((r, i) => {
     const [name, desc, price, old, pattern, colors, cats, rating, reviews, sold, tags] = r;
     return {
       id: slug(name), name, desc, price, old: old || 0, pattern, colors, cats,
@@ -242,7 +245,102 @@
     };
   });
   const byId = (id) => PRODUCTS.find((p) => p.id === id);
-  const imgs = (p, color) => [productImage(p.pattern, color, 'flat'), productImage(p.pattern, color, 'fold')];
+
+  // Real uploaded photos win over the generated artwork when a product has them.
+  const imgs = (p, color) => {
+    const real = p.imageUrls ?? [];
+    if (real.length) return [real[0], real[1] ?? real[0]];
+    return [productImage(p.pattern, color, 'flat'), productImage(p.pattern, color, 'fold')];
+  };
+
+  /* ---------------------------------------------------------------
+     LIVE CATALOGUE
+     When js/config.js holds a Supabase project, products, prices, images
+     and stock all come from the database, so the storefront reflects
+     whatever the owner does in the admin dashboard with no code changes.
+     Without a project it silently keeps the built-in demo catalogue.
+  --------------------------------------------------------------- */
+  const live = { on: false, api: null, variants: new Map() };
+
+  /** available units for a size+colour; Infinity when running unconnected. */
+  function availableFor(p, size, color) {
+    if (!live.on) return Infinity;
+    const v = live.variants.get(`${p.id}|${size}|${color}`);
+    return v ? v.available : 0;
+  }
+  function variantIdFor(p, size, color) {
+    return live.variants.get(`${p.id}|${size}|${color}`)?.id ?? null;
+  }
+
+  /** Map a Supabase product row onto the shape the storefront already uses. */
+  function mapProduct(row, index, total) {
+    const variants = (row.variants ?? []).filter((v) => v.is_active);
+    const colors = [...new Set(variants.map((v) => v.color))];
+    const sizes = [...new Set(variants.map((v) => v.size))];
+
+    const cats = [];
+    if (row.category?.slug) cats.push(row.category.slug);
+    if (row.is_new_arrival) cats.push('new-arrivals');
+    if (row.is_best_seller) cats.push('best-sellers');
+    if (row.pattern && row.pattern !== 'plain' && !cats.includes('cute-prints')) {
+      cats.push('cute-prints');
+    }
+    if (row.pattern === 'plain' && !cats.includes('plain-cotton')) cats.push('plain-cotton');
+
+    variants.forEach((v) => {
+      live.variants.set(`${row.slug}|${v.size}|${v.color}`, {
+        id: v.id,
+        available: Math.max((v.stock_quantity ?? 0) - (v.reserved_quantity ?? 0), 0),
+      });
+    });
+
+    const images = [...(row.images ?? [])]
+      .sort((a, b) => (b.is_primary - a.is_primary) || (a.sort_order - b.sort_order))
+      .map((i) => i.image_url);
+
+    return {
+      id: row.slug,
+      productId: row.id,
+      name: row.name,
+      desc: row.description ?? '',
+      price: Number(row.price),
+      old: row.compare_at_price ? Number(row.compare_at_price) : 0,
+      pattern: row.pattern || 'plain',
+      colors: colors.length ? colors : ['Cream'],
+      cats,
+      rating: Number(row.rating_average) || 4.6,
+      reviews: row.rating_count ?? 0,
+      // No public "units sold" column; rating volume is a reasonable stand-in
+      // for the Best Selling sort, and Best Seller stays a curated flag.
+      sold: (row.rating_count ?? 0) + (row.is_best_seller ? 1000 : 0),
+      tags: [row.pattern, row.fabric, row.material, row.name]
+        .filter(Boolean).join(' ').toLowerCase().split(/\s+/),
+      sizes: sizes.length ? sizes : ['S', 'M', 'L'],
+      added: total - index,
+      fabric: row.fabric || '100% breathable cotton',
+      imageUrls: images,
+      totalAvailable: variants.reduce(
+        (s, v) => s + Math.max((v.stock_quantity ?? 0) - (v.reserved_quantity ?? 0), 0), 0),
+    };
+  }
+
+  async function loadCatalogFromSupabase(api) {
+    const rows = await api.getProducts({ limit: 200, sort: 'newest' });
+    if (!rows?.length) return false;         // empty catalogue: keep the demo one
+    live.variants.clear();
+    PRODUCTS = rows.map((r, i) => mapProduct(r, i, rows.length));
+    live.on = true;
+    live.api = api;
+    return true;
+  }
+
+  /** Re-render whatever is on screen after the catalogue swaps in. */
+  function repaintAfterCatalogChange() {
+    buildFilterUI();
+    renderHome();
+    renderCart();
+    router();
+  }
 
   /* ---------------------------------------------------------------
      4. STATE
@@ -587,9 +685,7 @@
 
           <div class="opt">
             <div class="opt-head"><h3>Size</h3><button class="linkbtn" id="openSizeGuide" type="button">Size guide</button></div>
-            <div class="opt-row" id="pdpSizes">
-              ${p.sizes.map((s) => `<button class="size-btn" data-size="${s}">${s}</button>`).join('')}
-            </div>
+            <div class="opt-row" id="pdpSizes">${sizeButtons(p, pdp.color)}</div>
             <span class="err" id="sizeErr">Please choose a size first 🎀</span>
           </div>
 
@@ -654,6 +750,22 @@
     observeReveals();
   }
 
+  /**
+   * Size buttons for the chosen colour. When the store is connected to
+   * Supabase, a variant with no stock is rendered disabled and labelled, so
+   * an out-of-stock size cannot be selected at all (§7).
+   */
+  function sizeButtons(p, color) {
+    return p.sizes.map((s) => {
+      const avail = availableFor(p, s, color);
+      const out = avail <= 0;
+      return `<button class="size-btn${out ? ' is-out' : ''}" data-size="${s}"
+        ${out ? 'disabled aria-disabled="true"' : ''}
+        title="${out ? 'Out of stock in this colour' : (Number.isFinite(avail) ? avail + ' available' : '')}"
+        >${s}${out ? ' <small>·&nbsp;out</small>' : ''}</button>`;
+    }).join('');
+  }
+
   function galleryFor(p, color) {
     const other = p.colors.find((c) => c !== color) || color;
     return [productImage(p.pattern, color, 'flat'), productImage(p.pattern, color, 'fold'), productImage(p.pattern, other, 'flat')];
@@ -675,6 +787,14 @@
       const gal = galleryFor(p, pdp.color);
       $$('#pdpThumbs .thumb img').forEach((im, i) => { im.src = gal[i]; });
       setImg(pdp.img);
+
+      // Availability is per size *and* colour, so the size row is rebuilt.
+      $('#pdpSizes').innerHTML = sizeButtons(p, pdp.color);
+      if (pdp.size && availableFor(p, pdp.size, pdp.color) <= 0) pdp.size = null;
+      if (pdp.size) {
+        $$('#pdpSizes .size-btn').forEach((x) =>
+          x.classList.toggle('sel', x.dataset.size === pdp.size));
+      }
     });
 
     $('#pdpSizes').addEventListener('click', (e) => {
@@ -744,6 +864,23 @@
     const p = byId(id); if (!p) return;
     const key = lineKey(id, size, color);
     const line = state.cart.find((l) => l.key === key);
+
+    // Never let the bag hold more than the shop actually has. The server
+    // checks this again at checkout — this is only for a kind error message.
+    const avail = availableFor(p, size, color);
+    if (avail <= 0) {
+      toast(`${esc(p.name)} — ${size} / ${color} is out of stock`, '☁️', 'err');
+      return;
+    }
+    const wanted = (line?.qty ?? 0) + qty;
+    if (wanted > avail) {
+      toast(`Only ${avail} left in ${size} / ${color}`, '🎀', 'err');
+      if (!line) state.cart.push({ key, id, size, color, qty: avail });
+      else line.qty = avail;
+      persistCart(); renderCart();
+      return;
+    }
+
     if (line) line.qty = Math.min(10, line.qty + qty);
     else state.cart.push({ key, id, size, color, qty });
     persistCart(); renderCart();
@@ -839,8 +976,15 @@
     const add = e.target.closest('[data-add]');
     if (add) {
       const p = byId(add.dataset.add); if (!p) return;
-      const size = p.sizes.includes('M') ? 'M' : p.sizes[0];
-      addToCart(p.id, size, p.colors[0], 1, add);
+      const color = p.colors[0];
+      // Prefer M, but fall back to whatever size is actually in stock.
+      const size = [p.sizes.includes('M') ? 'M' : null, ...p.sizes]
+        .filter(Boolean).find((s) => availableFor(p, s, color) > 0);
+      if (!size) {
+        toast(`${esc(p.name)} is out of stock`, '☁️', 'err');
+        return;
+      }
+      addToCart(p.id, size, color, 1, add);
       return;
     }
     const w = e.target.closest('[data-wish]');
@@ -1083,6 +1227,14 @@
     ok = setErr('coBlock', 'coBlockErr', $('#coBlock').value.trim().length < 3 ? 'Please enter block, street and house.' : '') && ok;
     if (!ok) return;
 
+    // Connected store: place a real order through Supabase so inventory,
+    // coupons, loyalty and the admin dashboard all stay in step. The server
+    // re-prices everything and re-checks stock; nothing here is trusted.
+    if (live.on && live.api) {
+      placeOrderOnline(e.target);
+      return;
+    }
+
     const btn = e.target.querySelector('button[type=submit]');
     btn.disabled = true; btn.textContent = 'Placing your order…';
     setTimeout(() => {
@@ -1105,6 +1257,80 @@
       toast('Order placed — sleep tight 🌙♡', '🎉');
     }, 800);
   });
+
+  /**
+   * Checkout against Supabase. Requires a signed-in customer, because an
+   * order has to belong to someone. The local bag is pushed to the server
+   * cart, then place_order() re-prices it and reserves the stock atomically.
+   */
+  async function placeOrderOnline(form) {
+    const api = live.api;
+    const btn = form.querySelector('button[type=submit]');
+    const setBusy = (t) => { btn.disabled = !!t; btn.textContent = t || 'Place Order'; };
+
+    try {
+      setBusy('Checking your account…');
+      const session = await api.getSession();
+      if (!session) {
+        setBusy(null);
+        closeModal('#checkoutModal');
+        toast('Please log in or create an account to place your order 🧸', '🧸', 'err');
+        openAuth('login');
+        return;
+      }
+
+      setBusy('Saving your address…');
+      const address = await api.createAddress({
+        label: 'home',
+        fullName: $('#coName').value.trim(),
+        phone: $('#coPhone').value.trim(),
+        governorate: $('#coArea').value.trim(),   // zone lookup uses governorate
+        area: $('#coArea').value.trim(),
+        block: $('#coBlock').value.trim(),
+        street: $('#coBlock').value.trim(),
+        buildingNumber: $('#coBlock').value.trim(),
+      });
+
+      setBusy('Reserving your items…');
+      // Rebuild the server cart from the local bag, then let the server price it.
+      await api.clearCart().catch(() => {});
+      for (const l of state.cart) {
+        const p = byId(l.id);
+        const variantId = p && variantIdFor(p, l.size, l.color);
+        if (variantId) await api.addToCart(variantId, l.qty);
+      }
+
+      setBusy('Placing your order…');
+      const order = await api.createOrder({
+        addressId: address.id,
+        paymentMethod: (form.querySelector('input[name=pay]:checked')?.value === 'knet')
+          ? 'knet' : 'cod',
+        notes: null,
+      });
+
+      state.cart = [];
+      persistCart();
+      renderCart();
+
+      $('#coForm').hidden = true;
+      $('#coDone').hidden = false;
+      $('#coDone').innerHTML = `<span class="big-bear">🧸</span><h3>Your cozy order is confirmed!</h3>
+        <p class="muted">Order <span class="oid">${esc(order.order_number)}</span> ·
+          ${money(order.total_amount)} KWD</p>
+        <p style="margin-top:10px">We'll deliver in 1–3 days. Packed with love from BJmeem ♡</p>
+        <button class="btn btn-primary btn-lg" style="margin-top:18px" id="coKeep">Keep shopping</button>`;
+      $('#coKeep').addEventListener('click', () => {
+        closeModal('#checkoutModal'); location.hash = '#/shop';
+      });
+      toast('Order placed — sleep tight 🌙♡', '🎉');
+    } catch (err) {
+      toast(err?.message || 'We could not place that order.', '☁️', 'err');
+      // Refresh stock so the bag reflects what is genuinely available.
+      loadCatalogFromSupabase(api).then(repaintAfterCatalogChange).catch(() => {});
+    } finally {
+      setBusy(null);
+    }
+  }
 
   /* ---------------------------------------------------------------
      NEWSLETTER
@@ -1244,6 +1470,26 @@
     observeReveals();
     addEventListener('hashchange', router);
     router();
+    connectToSupabase();
+  }
+
+  /**
+   * Swap the demo catalogue for the live one, if a Supabase project is
+   * configured. Deliberately non-blocking and non-fatal: the storefront has
+   * already rendered by this point, so a slow or absent backend costs nothing.
+   */
+  function connectToSupabase() {
+    const start = async () => {
+      const api = window.BJmeemAPI;
+      if (!api || !api.isConfigured) return;
+      try {
+        if (await loadCatalogFromSupabase(api)) repaintAfterCatalogChange();
+      } catch (e) {
+        console.warn('[BJmeem] Falling back to the built-in catalogue:', e?.message || e);
+      }
+    };
+    if (window.BJmeemAPI) start();
+    else addEventListener('bjmeem:api-ready', start, { once: true });
   }
   document.readyState === 'loading' ? document.addEventListener('DOMContentLoaded', init) : init();
 
