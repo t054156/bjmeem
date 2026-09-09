@@ -8,7 +8,7 @@
  *
  *   import { loginUser, addToCart } from './js/supabase/index.js';
  */
-export { supabase, BJmeemError, toError, storageUrl, currentUserId } from './client.js';
+export { supabase, isConfigured, BJmeemError, toError, storageUrl, currentUserId } from './client.js';
 
 export {
   signUpUser, loginUser, logoutUser, resetPassword, updatePassword,

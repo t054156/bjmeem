@@ -22,21 +22,34 @@ import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
 
 const cfg = (typeof window !== 'undefined' && window.BJMEEM_CONFIG) || {};
 
-if (!cfg.supabaseUrl || !cfg.supabaseAnonKey) {
-  throw new Error(
-    'BJmeem: window.BJMEEM_CONFIG.supabaseUrl and .supabaseAnonKey must be set ' +
-    'before loading js/supabase/index.js');
-}
+/**
+ * True once js/config.js has real values. Importing this module before the
+ * owner has connected a Supabase project must NOT throw: the storefront falls
+ * back to its built-in catalogue, and the admin dashboard shows a setup screen.
+ */
+export const isConfigured = Boolean(cfg.supabaseUrl && cfg.supabaseAnonKey);
 
-export const supabase = createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
-  auth: {
-    persistSession: true,      // "stay logged in"
-    autoRefreshToken: true,
-    detectSessionInUrl: true,  // email-verification and reset links land here
-    storageKey: 'bjmeem.auth',
-  },
-  global: { headers: { 'x-application-name': 'bjmeem-web' } },
-});
+export const supabase = isConfigured
+  ? createClient(cfg.supabaseUrl, cfg.supabaseAnonKey, {
+      auth: {
+        persistSession: true,      // "stay logged in"
+        autoRefreshToken: true,
+        detectSessionInUrl: true,  // email-verification and reset links land here
+        storageKey: 'bjmeem.auth',
+      },
+      global: { headers: { 'x-application-name': 'bjmeem-web' } },
+    })
+  // Any call on the stub rejects with a clear, catchable error rather than
+  // "cannot read property of undefined" three frames deep.
+  : new Proxy({}, {
+      get() {
+        return () => {
+          throw new BJmeemError(
+            'BJmeem is not connected to Supabase yet. Add your project URL and ' +
+            'anon key to js/config.js.', 'NOT_CONFIGURED');
+        };
+      },
+    });
 
 /* ------------------------------------------------------------------ errors */
 
