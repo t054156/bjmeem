@@ -1,0 +1,146 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+<meta name="robots" content="noindex, nofollow" />
+<title>BJmeem Admin</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg%20xmlns='http://www.w3.org/2000/svg'%20viewBox='0%200%2032%2032'%3E%3Ctext%20y='27'%20font-size='27'%3E%F0%9F%A7%B8%3C/text%3E%3C/svg%3E" />
+<link rel="preconnect" href="https://fonts.googleapis.com" />
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600&family=Quicksand:wght@400;500;600;700&display=swap" rel="stylesheet" />
+<link rel="stylesheet" href="admin.css" />
+<script src="../js/config.js"></script>
+</head>
+<body>
+
+<!-- ============ SETUP (shown when js/config.js is still blank) ============ -->
+<section class="gate" id="setupGate" hidden>
+  <div class="gate-card">
+    <span class="gate-bear">🧸</span>
+    <h1>Connect BJmeem to Supabase</h1>
+    <p>The dashboard is installed but not linked to a database yet.</p>
+    <ol class="setup-steps">
+      <li>Create a project at <b>supabase.com</b>.</li>
+      <li>Run the migrations: <code>supabase db push</code></li>
+      <li>Copy <b>Project URL</b> and <b>anon key</b> from Project Settings → API.</li>
+      <li>Paste them into <code>js/config.js</code> and redeploy.</li>
+      <li>Make yourself owner in the SQL editor:<br>
+        <code>update public.profiles set role='owner' where email='you@example.com';</code></li>
+    </ol>
+    <p class="gate-note">Only the <b>anon</b> key goes in <code>js/config.js</code>.
+      The service-role key must never leave Supabase.</p>
+  </div>
+</section>
+
+<!-- ============ LOGIN ============ -->
+<section class="gate" id="loginGate" hidden>
+  <form class="gate-card login-card" id="loginForm" novalidate>
+    <span class="gate-bear">🧸</span>
+    <h1>BJmeem Admin</h1>
+    <p>Sign in with your owner or staff account.</p>
+
+    <label class="field">
+      <span>Email</span>
+      <input type="email" id="loginEmail" autocomplete="email" required />
+    </label>
+    <label class="field">
+      <span>Password</span>
+      <input type="password" id="loginPass" autocomplete="current-password" required />
+    </label>
+
+    <p class="form-error" id="loginError" hidden></p>
+    <button class="btn btn-primary btn-block" type="submit" id="loginBtn">Sign in</button>
+    <p class="gate-note">Customer accounts cannot open this dashboard.
+      Access is enforced by the database, not just this page.</p>
+  </form>
+</section>
+
+<!-- ============ DENIED (signed in, but not staff) ============ -->
+<section class="gate" id="deniedGate" hidden>
+  <div class="gate-card">
+    <span class="gate-bear">🔒</span>
+    <h1>No admin access</h1>
+    <p id="deniedWho">This account is not an owner, admin or staff member.</p>
+    <div class="gate-actions">
+      <a class="btn btn-ghost" href="../index.html">Back to the store</a>
+      <button class="btn btn-primary" id="deniedSignOut">Sign out</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ APP ============ -->
+<div class="app" id="app" hidden>
+  <aside class="sidebar" id="sidebar">
+    <div class="brand">
+      <span class="brand-bear">🧸</span>
+      <span class="brand-name">BJmeem <b>Admin</b></span>
+      <button class="icon-btn sidebar-close" id="sidebarClose" aria-label="Close menu">&times;</button>
+    </div>
+
+    <nav class="nav" id="nav">
+      <a href="#/dashboard" data-nav="dashboard" data-perm="">Dashboard</a>
+      <a href="#/orders"    data-nav="orders"    data-perm="orders">Orders</a>
+      <a href="#/products"  data-nav="products"  data-perm="products">Products</a>
+      <a href="#/inventory" data-nav="inventory" data-perm="inventory">Inventory</a>
+      <a href="#/customers" data-nav="customers" data-perm="customers">Customers</a>
+      <a href="#/loyalty"   data-nav="loyalty"   data-perm="loyalty">Cozy Club</a>
+      <a href="#/coupons"   data-nav="coupons"   data-perm="coupons">Coupons</a>
+      <a href="#/delivery"  data-nav="delivery"  data-perm="delivery">Delivery</a>
+      <a href="#/reports"   data-nav="reports"   data-perm="reports">Reports</a>
+      <a href="#/settings"  data-nav="settings"  data-perm="settings">Settings</a>
+    </nav>
+
+    <div class="sidebar-foot">
+      <div class="who">
+        <span class="who-avatar" id="whoAvatar">B</span>
+        <span class="who-text">
+          <b id="whoName">—</b>
+          <small id="whoRole">—</small>
+        </span>
+      </div>
+      <button class="btn btn-ghost btn-block" id="signOutBtn">Log out</button>
+      <a class="storelink" href="../index.html" target="_blank" rel="noopener">View store ↗</a>
+    </div>
+  </aside>
+
+  <div class="main">
+    <header class="topbar">
+      <button class="icon-btn menu-btn" id="menuBtn" aria-label="Open menu">
+        <span></span><span></span><span></span>
+      </button>
+      <h1 class="page-title" id="pageTitle">Dashboard</h1>
+      <div class="topbar-right">
+        <span class="live" id="liveDot" title="Realtime connection">
+          <i></i><span id="liveText">connecting…</span>
+        </span>
+      </div>
+    </header>
+
+    <main class="content" id="view" tabindex="-1"></main>
+  </div>
+</div>
+
+<div class="overlay" id="overlay" hidden></div>
+<div class="toasts" id="toasts" aria-live="polite"></div>
+
+<!-- Confirmation dialog for destructive actions (§19) -->
+<div class="modal" id="confirmModal" hidden role="dialog" aria-modal="true">
+  <div class="modal-card modal-sm">
+    <h2 id="confirmTitle">Are you sure?</h2>
+    <p id="confirmBody"></p>
+    <div class="modal-actions">
+      <button class="btn btn-ghost" id="confirmCancel">Cancel</button>
+      <button class="btn btn-danger" id="confirmOk">Confirm</button>
+    </div>
+  </div>
+</div>
+
+<!-- Generic form dialog, filled by the views -->
+<div class="modal" id="formModal" hidden role="dialog" aria-modal="true">
+  <div class="modal-card" id="formModalCard"></div>
+</div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>
