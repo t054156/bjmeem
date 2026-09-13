@@ -14,8 +14,11 @@ const TYPES = {
 http.createServer((req, res) => {
   let url = decodeURIComponent(req.url.split('?')[0]);
   if (url === '/') url = '/index.html';
-  let file = path.join(ROOT, url);
-  if (!file.startsWith(ROOT)) { res.writeHead(403).end('Forbidden'); return; }
+  // Resolve first, then require the result to sit INSIDE the project folder.
+  // startsWith(ROOT) alone also accepted a sibling folder whose name merely
+  // begins with the same letters, e.g. <root>-backup.
+  let file = path.resolve(ROOT, '.' + url);
+  if (file !== ROOT && !file.startsWith(ROOT + path.sep)) { res.writeHead(403).end('Forbidden'); return; }
 
   // /admin and /admin/ both resolve to /admin/index.html
   try {

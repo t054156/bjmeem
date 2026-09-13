@@ -14,8 +14,8 @@ export async function signUpUser({
   email, password, firstName, lastName, phone, dateOfBirth, gender, referralCode,
 } = {}) {
   if (!email) throw new BJmeemError('Please enter your email address.', 'EMAIL_REQUIRED');
-  if (!password || password.length < 6) {
-    throw new BJmeemError('Password must be at least 6 characters.', 'WEAK_PASSWORD');
+  if (!password || password.length < 10) {
+    throw new BJmeemError('Password must be at least 10 characters.', 'WEAK_PASSWORD');
   }
 
   const data = await run(supabase.auth.signUp({
@@ -69,8 +69,8 @@ export async function resetPassword(email) {
 
 /** Call after the user follows the reset link. */
 export async function updatePassword(newPassword) {
-  if (!newPassword || newPassword.length < 6) {
-    throw new BJmeemError('Password must be at least 6 characters.', 'WEAK_PASSWORD');
+  if (!newPassword || newPassword.length < 10) {
+    throw new BJmeemError('Password must be at least 10 characters.', 'WEAK_PASSWORD');
   }
   return run(supabase.auth.updateUser({ password: newPassword }));
 }

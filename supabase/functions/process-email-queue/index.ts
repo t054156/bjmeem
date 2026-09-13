@@ -5,7 +5,7 @@
 //   supabase functions deploy process-email-queue --no-verify-jwt
 //   supabase secrets set RESEND_API_KEY=... EMAIL_FROM='BJmeem <hello@bjmeem.com>'
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.116.0';
 import { render, deliver } from '../_shared/email.ts';
 
 const BATCH = 25;

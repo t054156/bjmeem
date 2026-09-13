@@ -31,7 +31,17 @@
     sdel(k) { try { sessionStorage.removeItem(k); } catch (e) {} }
   };
 
-  const KEY = { CART: 'bjmeem_cart', WISH: 'bjmeem_wishlist', USER: 'bjmeem_user', USERS: 'bjmeem_users', ORDERS: 'bjmeem_orders', NEWS: 'bjmeem_news' };
+  const KEY = { CART: 'bjmeem_cart', WISH: 'bjmeem_wishlist', NEWS: 'bjmeem_news' };
+
+  // The storefront used to keep accounts in the visitor's own browser: an email
+  // and a weakly scrambled password per account, plus invented order records.
+  // Those passwords are burned. Remove them from every browser that still has
+  // them, once, on load. Nothing here belongs to a real account.
+  (function purgeLegacyLocalAccounts() {
+    ['bjmeem_users', 'bjmeem_user', 'bjmeem_orders'].forEach((k) => {
+      try { localStorage.removeItem(k); sessionStorage.removeItem(k); } catch (e) {}
+    });
+  })();
 
   /* ---------------------------------------------------------------
      2. ARTWORK — every product image is generated as an inline SVG,
@@ -272,6 +282,13 @@
     return live.variants.get(`${p.id}|${size}|${color}`)?.id ?? null;
   }
 
+  /**
+   * True only when a real Supabase project is wired up, i.e. an order placed
+   * here can actually reach the shop. When false the storefront browses
+   * normally but refuses checkout instead of pretending an order went through.
+   */
+  function ordersEnabled() { return Boolean(live.api); }
+
   /** Map a Supabase product row onto the shape the storefront already uses. */
   function mapProduct(row, index, total) {
     const variants = (row.variants ?? []).filter((v) => v.is_active);
@@ -348,7 +365,7 @@
   const state = {
     cart: store.get(KEY.CART, []),
     wish: store.get(KEY.WISH, []),
-    user: store.get(KEY.USER, null) || store.sget(KEY.USER, null),
+    user: null,                 // filled in from the Supabase session, never from local storage
     filters: { cats: [], sizes: [], colors: [], patterns: [], max: 30 },
     sort: 'newest',
     q: ''
@@ -422,10 +439,10 @@
         <div class="card-rate"><span class="stars">${starsHTML(p.rating)}</span> ${p.rating} (${p.reviews})</div>
         <p class="card-price">${kwd(p.price)} ${p.old ? `<s>${money(p.old)}</s>` : ''}</p>
         <div class="swatch-row" aria-label="Available colors">
-          ${p.colors.map((c) => `<span class="sw" style="background:${COLORS[c].hex}" title="${c}"></span>`).join('')}
-          <span class="tiny">${p.colors.join(' / ')}</span>
+          ${p.colors.map((c) => `<span class="sw" style="background:${COLORS[c].hex}" title="${esc(c)}"></span>`).join('')}
+          <span class="tiny">${esc(p.colors.join(' / '))}</span>
         </div>
-        <div class="size-row" aria-label="Available sizes">${p.sizes.map((s) => `<span>${s}</span>`).join('')}</div>
+        <div class="size-row" aria-label="Available sizes">${p.sizes.map((s) => `<span>${esc(s)}</span>`).join('')}</div>
         <button class="btn btn-primary card-atc" data-add="${p.id}">Add to Bag</button>
       </div>
     </article>`;
@@ -712,7 +729,7 @@
               <li>Relaxed BJmeem fit — model wears size S</li>
               <li>${esc(p.pattern === 'plain' ? 'Solid dyed cotton, no print' : PATTERNS.find((x) => x.key === p.pattern).label + ' print, printed small and soft')}</li>
               <li>Covered elastic waistband with an inner drawcord</li>
-              <li>Available in ${p.colors.join(', ')}</li>
+              <li>Available in ${esc(p.colors.join(', '))}</li>
             </ul></div></details>
             <details><summary>Material &amp; Care</summary><div class="acc-body"><ul>
               <li>${esc(p.fabric)}</li>
@@ -759,10 +776,10 @@
     return p.sizes.map((s) => {
       const avail = availableFor(p, s, color);
       const out = avail <= 0;
-      return `<button class="size-btn${out ? ' is-out' : ''}" data-size="${s}"
+      return `<button class="size-btn${out ? ' is-out' : ''}" data-size="${esc(s)}"
         ${out ? 'disabled aria-disabled="true"' : ''}
         title="${out ? 'Out of stock in this colour' : (Number.isFinite(avail) ? avail + ' available' : '')}"
-        >${s}${out ? ' <small>·&nbsp;out</small>' : ''}</button>`;
+        >${esc(s)}${out ? ' <small>·&nbsp;out</small>' : ''}</button>`;
     }).join('');
   }
 
@@ -1043,8 +1060,8 @@
      11. AUTH  (front-end only — swap for a real API, see API_STUB)
   --------------------------------------------------------------- */
   const validEmail = (v) => /^[^\s@]+@[^\s@]+\.[a-z]{2,}$/i.test(v.trim());
-  // Demo-only obfuscation. A real build must hash + verify on the server.
-  const hash = (s) => { let h = 5381; for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) | 0; return 'h' + Math.abs(h).toString(36); };
+  /** The real account system, or null when no Supabase project is connected. */
+  function authApi() { return live.api && live.api.isConfigured ? live.api : null; }
 
   function setErr(inputId, errId, msg) {
     const i = $('#' + inputId), e = $('#' + errId);
@@ -1061,7 +1078,24 @@
     $('#authSub').textContent = view === 'register' ? 'Join the BJmeem Sleep Club 🧸' : view === 'reset' ? "We'll help you back in." : 'Log in to your BJmeem account.';
   }
 
-  function openAuth(view = 'login') { showAuth(view); openModal('#authModal'); }
+  /** Shown instead of the login/signup forms when accounts are not live. */
+  function showAccountsOffline() {
+    ['loginForm', 'registerForm', 'resetForm'].forEach((f) => { $('#' + f).hidden = true; });
+    $('#authTitle').textContent = 'Accounts are not live yet';
+    $('#authSub').textContent = 'Have a browse — nothing is lost.';
+    const box = $('#authOk');
+    box.hidden = false;
+    box.innerHTML = `<span class="big-bear">🧸</span><h3>Accounts aren't open yet</h3>
+      <p>We're not asking you for a password until we can keep it safely. Your bag and
+         wishlist still work — they stay on this device.</p>
+      <p style="margin-top:10px">Message us on Instagram <b>@bjmeem</b> if you need anything.</p>`;
+  }
+
+  function openAuth(view = 'login') {
+    openModal('#authModal');
+    if (!authApi()) { showAccountsOffline(); return; }
+    showAuth(view);
+  }
 
   $('#authModal')?.addEventListener('click', (e) => {
     const b = e.target.closest('[data-auth]'); if (b) showAuth(b.dataset.auth);
@@ -1072,7 +1106,7 @@
   $('#regPass')?.addEventListener('input', (e) => {
     const v = e.target.value;
     let s = 0;
-    if (v.length >= 6) s++; if (v.length >= 10) s++;
+    if (v.length >= 10) s++; if (v.length >= 14) s++;
     if (/[A-Z]/.test(v) && /[a-z]/.test(v)) s++;
     if (/\d/.test(v) || /[^\w]/.test(v)) s++;
     const m = $('#passMeter');
@@ -1080,49 +1114,72 @@
     m.style.background = s <= 1 ? '#D2694E' : s === 2 ? '#E5A94F' : s === 3 ? '#8FBF7A' : '#5EA97F';
   });
 
-  $('#loginForm')?.addEventListener('submit', (e) => {
+  $('#loginForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const api = authApi(); if (!api) { showAccountsOffline(); return; }
     const email = $('#loginEmail').value.trim(), pass = $('#loginPass').value;
     let ok = true;
     ok = setErr('loginEmail', 'loginEmailErr', !email ? 'Please enter your email address.' : !validEmail(email) ? "That email doesn't look right — check for a typo." : '') && ok;
     ok = setErr('loginPass', 'loginPassErr', !pass ? 'Please enter your password.' : '') && ok;
     if (!ok) return;
 
-    const users = store.get(KEY.USERS, []);
-    const found = users.find((u) => u.email.toLowerCase() === email.toLowerCase());
-    if (!found) { setErr('loginEmail', 'loginEmailErr', "We can't find a BJmeem account with that email. Create one below."); return; }
-    if (found.pass !== hash(pass)) { setErr('loginPass', 'loginPassErr', "That password doesn't match. Try again."); return; }
-    signIn({ name: found.name, email: found.email }, $('#rememberMe').checked);
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      await api.loginUser(email, pass);
+      const user = await userFromSession();
+      if (!user) throw new Error('no session');
+      signIn(user);
+    } catch (err) {
+      // Deliberately identical whether the email is unknown or the password is
+      // wrong, so the form cannot be used to discover who shops here.
+      setErr('loginPass', 'loginPassErr', "That email and password don't match. Please try again.");
+    } finally { btn.disabled = false; }
   });
 
-  $('#registerForm')?.addEventListener('submit', (e) => {
+  $('#registerForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const api = authApi(); if (!api) { showAccountsOffline(); return; }
     const name = $('#regName').value.trim(), email = $('#regEmail').value.trim();
     const p1 = $('#regPass').value, p2 = $('#regPass2').value;
     let ok = true;
     ok = setErr('regName', 'regNameErr', name.length < 2 ? 'Please tell us your name.' : '') && ok;
     ok = setErr('regEmail', 'regEmailErr', !email ? 'Please enter your email address.' : !validEmail(email) ? "That email doesn't look right." : '') && ok;
-    ok = setErr('regPass', 'regPassErr', p1.length < 6 ? 'Password must be at least 6 characters.' : '') && ok;
+    ok = setErr('regPass', 'regPassErr', p1.length < 10 ? 'Password must be at least 10 characters.' : '') && ok;
     ok = setErr('regPass2', 'regPass2Err', p2 !== p1 ? "Passwords don't match." : '') && ok;
     const terms = $('#regTerms').checked;
     $('#regTermsErr').textContent = terms ? '' : 'Please accept the terms to continue.';
     $('#regTermsErr').classList.toggle('show', !terms);
     if (!ok || !terms) return;
 
-    const users = store.get(KEY.USERS, []);
-    if (users.some((u) => u.email.toLowerCase() === email.toLowerCase())) {
-      setErr('regEmail', 'regEmailErr', 'An account already exists with this email. Try logging in.');
-      return;
-    }
-    users.push({ name, email, pass: hash(p1), joined: Date.now() });
-    store.set(KEY.USERS, users);
-    signIn({ name, email }, true, true);
+    const btn = e.target.querySelector('button[type=submit]');
+    btn.disabled = true;
+    try {
+      const parts = name.split(/\s+/);
+      const res = await api.signUpUser({
+        email, password: p1,
+        firstName: parts[0], lastName: parts.slice(1).join(' ') || null,
+      });
+      if (res.needsEmailVerification) {
+        // Same wording whether or not that address already had an account.
+        authSuccess('💌', 'Check your inbox',
+          `We've sent a confirmation link to <b>${esc(email)}</b>. Open it to finish setting up your account.`);
+        return;
+      }
+      signIn((await userFromSession()) || { name, email }, true);
+    } catch (err) {
+      setErr('regPass', 'regPassErr', err?.message || 'We could not create that account. Please try again.');
+    } finally { btn.disabled = false; }
   });
 
-  $('#resetForm')?.addEventListener('submit', (e) => {
+  $('#resetForm')?.addEventListener('submit', async (e) => {
     e.preventDefault();
+    const api = authApi(); if (!api) { showAccountsOffline(); return; }
     const email = $('#resetEmail').value.trim();
     if (!setErr('resetEmail', 'resetEmailErr', !email ? 'Please enter your email address.' : !validEmail(email) ? "That email doesn't look right." : '')) return;
+    // Errors are swallowed on purpose: the answer must not depend on whether
+    // that address has an account.
+    await api.resetPassword(email).catch(() => {});
     authSuccess('💌', 'Check your inbox', `If an account exists for <b>${esc(email)}</b>, a reset link is on its way.`);
   });
 
@@ -1133,10 +1190,29 @@
     box.innerHTML = `<span class="big-bear">${ico}</span><h3>${title}</h3><p>${msg}</p>`;
   }
 
-  function signIn(user, remember, isNew) {
+  /** Read the signed-in customer straight from the session. Never cached. */
+  async function userFromSession() {
+    const api = authApi(); if (!api) return null;
+    const session = await api.getSession();
+    if (!session) return null;
+    const email = session.user?.email || '';
+    let name = '';
+    try {
+      const p = await api.getProfile();
+      name = [p?.first_name, p?.last_name].filter(Boolean).join(' ');
+    } catch (e) { /* profile not readable yet; fall back to the email */ }
+    return { name: name || email.split('@')[0], email };
+  }
+
+  /** Repaint the header and account page from whatever the session says now. */
+  async function syncSessionUser() {
+    state.user = await userFromSession();
+    paintUser();
+    if (!$('#page-account').hidden) renderAccount();
+  }
+
+  function signIn(user, isNew) {
     state.user = user;
-    if (remember) { store.set(KEY.USER, user); store.sdel(KEY.USER); }
-    else { store.sset(KEY.USER, user); store.del(KEY.USER); }
     paintUser();
     authSuccess('🧸', isNew ? `Welcome to BJmeem, ${esc(user.name.split(' ')[0])}!` : `Welcome back, ${esc(user.name.split(' ')[0])}!`,
       isNew ? "Your account is ready. Let's find something soft." : "You're logged in. Your bag and wishlist are waiting.");
@@ -1144,8 +1220,9 @@
     setTimeout(() => { closeModal('#authModal'); showAuth('login'); }, 1500);
   }
 
-  function signOut() {
-    state.user = null; store.del(KEY.USER); store.sdel(KEY.USER);
+  async function signOut() {
+    await authApi()?.logoutUser().catch(() => {});
+    state.user = null;
     paintUser(); toast('Logged out — sleep well 🌙', '🌙');
     if (!$('#page-account').hidden) renderAccount();
   }
@@ -1177,7 +1254,7 @@
       $('#acctLogin').addEventListener('click', () => openAuth('login'));
       return;
     }
-    const orders = store.get(KEY.ORDERS, []).filter((o) => o.email === state.user.email);
+    const orders = [];          // real history is fetched below; there is no local copy
     box.innerHTML = `
       <div class="acct-hero">
         <span class="avatar">${esc(state.user.name.trim()[0].toUpperCase())}</span>
@@ -1198,13 +1275,52 @@
         <button class="btn btn-soft" id="logoutBtn">Log out</button>
       </div>`;
     $('#logoutBtn').addEventListener('click', signOut);
+    fillRecentOrders();
+  }
+
+  /** Real order history comes from the server. Silent if there is none. */
+  async function fillRecentOrders() {
+    const api = authApi(); if (!api || !state.user) return;
+    let rows = [];
+    try { rows = await api.getOrders({ limit: 5 }); } catch (e) { return; }
+    if (!rows.length) return;
+    const box = $('#accountCard');
+    const anchor = box.querySelector('.acct-actions');
+    if (!anchor) return;
+    const block = document.createElement('div');
+    block.innerHTML = `<h3 style="margin-top:22px">Recent orders</h3>
+      <div class="table-wrap"><table class="sg-table">
+      <thead><tr><th>Order</th><th>Date</th><th>Status</th><th>Total</th></tr></thead><tbody>
+      ${rows.map((o) => `<tr><td>${esc(o.order_number)}</td>
+        <td>${new Date(o.created_at).toLocaleDateString()}</td>
+        <td>${esc(o.order_status)}</td>
+        <td>${money(o.total_amount)} KWD</td></tr>`).join('')}
+      </tbody></table></div>`;
+    box.insertBefore(block, anchor);
   }
 
   /* ---------------------------------------------------------------
      12. CHECKOUT
   --------------------------------------------------------------- */
+  /** Shown instead of the address form when orders cannot reach the shop. */
+  function showOrderingOffline() {
+    $('#coForm').hidden = true;
+    $('#coDone').hidden = false;
+    $('#coDone').innerHTML = `<span class="big-bear">🧸</span>
+      <h3>Online ordering isn't live yet</h3>
+      <p class="muted">We can't take orders through the website at the moment, so we're not
+        going to ask for your name, phone number or address.</p>
+      <p style="margin-top:10px">Message us on Instagram <b>@bjmeem</b> or use the Contact page
+        and we'll put your order together by hand.</p>
+      <div class="acct-actions" style="margin-top:18px">
+        <a class="btn btn-primary" href="#/info/contact" data-modal-close>Contact us</a>
+        <button class="btn btn-soft" data-modal-close>Keep shopping</button>
+      </div>`;
+  }
+
   function openCheckout() {
     if (!state.cart.length) { toast('Your bag is empty — add something soft first ☁️', '☁️', 'err'); return; }
+    if (!ordersEnabled()) { closeCart(); openModal('#checkoutModal'); showOrderingOffline(); return; }
     const sub = cartSubtotal(), ship = sub >= FREE_OVER ? 0 : SHIP;
     $('#coSum').innerHTML = `
       ${state.cart.map((l) => { const p = byId(l.id); return `<div class="row"><span>${esc(p.name)} · ${esc(l.size)} · ${esc(l.color)} × ${l.qty}</span><b>${money(p.price * l.qty)}</b></div>`; }).join('')}
@@ -1227,35 +1343,11 @@
     ok = setErr('coBlock', 'coBlockErr', $('#coBlock').value.trim().length < 3 ? 'Please enter block, street and house.' : '') && ok;
     if (!ok) return;
 
-    // Connected store: place a real order through Supabase so inventory,
-    // coupons, loyalty and the admin dashboard all stay in step. The server
-    // re-prices everything and re-checks stock; nothing here is trusted.
-    if (live.on && live.api) {
-      placeOrderOnline(e.target);
-      return;
-    }
-
-    const btn = e.target.querySelector('button[type=submit]');
-    btn.disabled = true; btn.textContent = 'Placing your order…';
-    setTimeout(() => {
-      const sub = cartSubtotal(), ship = sub >= FREE_OVER ? 0 : SHIP;
-      const order = {
-        id: 'BJM-' + Math.random().toString(36).slice(2, 7).toUpperCase(),
-        at: Date.now(), email: $('#coEmail').value.trim(),
-        items: state.cart.reduce((s, l) => s + l.qty, 0), total: sub + ship
-      };
-      const orders = store.get(KEY.ORDERS, []); orders.push(order); store.set(KEY.ORDERS, orders);
-      state.cart = []; persistCart(); renderCart();
-      $('#coForm').hidden = true;
-      $('#coDone').hidden = false;
-      $('#coDone').innerHTML = `<span class="big-bear">🧸</span><h3>Your cozy order is confirmed!</h3>
-        <p class="muted">Order <span class="oid">${order.id}</span> · ${order.items} item${order.items === 1 ? '' : 's'} · ${money(order.total)} KWD</p>
-        <p style="margin-top:10px">We'll deliver in 1–3 days. Packed with love from BJmeem ♡</p>
-        <button class="btn btn-primary btn-lg" style="margin-top:18px" id="coKeep">Keep shopping</button>`;
-      $('#coKeep').addEventListener('click', () => { closeModal('#checkoutModal'); location.hash = '#/shop'; });
-      btn.disabled = false; btn.textContent = 'Place Order';
-      toast('Order placed — sleep tight 🌙♡', '🎉');
-    }, 800);
+    // The only way an order is ever accepted: through Supabase, where the
+    // server re-prices the bag and reserves the stock. There is no offline
+    // path, because an order the shop never receives is worse than no order.
+    if (!ordersEnabled()) { showOrderingOffline(); return; }
+    placeOrderOnline(e.target);
   });
 
   /**
@@ -1482,6 +1574,9 @@
     const start = async () => {
       const api = window.BJmeemAPI;
       if (!api || !api.isConfigured) return;
+      live.api = api;   // ordering is live even if the catalogue call is slow
+      syncSessionUser();
+      api.onAuthChange(() => syncSessionUser());
       try {
         if (await loadCatalogFromSupabase(api)) repaintAfterCatalogChange();
       } catch (e) {

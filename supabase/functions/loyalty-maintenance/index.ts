@@ -5,7 +5,7 @@
 //   supabase functions deploy loyalty-maintenance --no-verify-jwt
 //   schedule: 0 3 * * *  (03:00 Kuwait)
 
-import { createClient } from 'jsr:@supabase/supabase-js@2';
+import { createClient } from 'jsr:@supabase/supabase-js@2.116.0';
 
 Deno.serve(async (req) => {
   const auth = req.headers.get('Authorization') ?? '';

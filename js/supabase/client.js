@@ -18,7 +18,7 @@
  *   </script>
  *   <script type="module" src="js/supabase/index.js"></script>
  */
-import { createClient } from 'https://esm.sh/@supabase/supabase-js@2';
+import { createClient } from 'https://esm.sh/@supabase/supabase-js@2.116.0?bundle';
 
 const cfg = (typeof window !== 'undefined' && window.BJMEEM_CONFIG) || {};
 
@@ -113,4 +113,17 @@ export function storageUrl(bucket, path) {
   if (!path) return null;
   if (/^https?:\/\//i.test(path)) return path;
   return supabase.storage.from(bucket).getPublicUrl(path).data.publicUrl;
+}
+
+/**
+ * A short-lived link into a PRIVATE bucket. Used for avatars, which are not
+ * world-readable: the link expires, so it cannot be forwarded or scraped into
+ * a permanent handle on someone's account.
+ */
+export async function storageSignedUrl(bucket, path, expiresInSeconds = 3600) {
+  if (!path) return null;
+  const { data, error } = await supabase.storage
+    .from(bucket).createSignedUrl(path, expiresInSeconds);
+  if (error) throw toError(error);
+  return data.signedUrl;
 }

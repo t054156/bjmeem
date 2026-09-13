@@ -8,7 +8,7 @@
  *
  *   import { loginUser, addToCart } from './js/supabase/index.js';
  */
-export { supabase, isConfigured, BJmeemError, toError, storageUrl, currentUserId } from './client.js';
+export { supabase, isConfigured, BJmeemError, toError, storageUrl, storageSignedUrl, currentUserId } from './client.js';
 
 export {
   signUpUser, loginUser, logoutUser, resetPassword, updatePassword,
@@ -16,7 +16,7 @@ export {
 } from './auth.js';
 
 export {
-  getProfile, updateProfile, uploadAvatar,
+  getProfile, updateProfile, uploadAvatar, getAvatarUrl,
   getAddresses, getDefaultAddress, createAddress, updateAddress, deleteAddress,
   setDefaultAddress, getDeliveryZone, getDeliveryZones,
   getNotifications, getUnreadCount, markNotificationRead, markAllNotificationsRead,

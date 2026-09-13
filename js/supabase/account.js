@@ -1,5 +1,5 @@
 /** BJmeem — profile, saved addresses, notifications. */
-import { supabase, run, rpc, currentUserId, storageUrl, BJmeemError } from './client.js';
+import { supabase, run, rpc, currentUserId, storageSignedUrl, BJmeemError } from './client.js';
 
 /* ------------------------------------------------------------------ profile */
 
@@ -40,9 +40,16 @@ export async function uploadAvatar(file) {
   await run(supabase.storage.from('avatars')
     .upload(path, file, { upsert: true, contentType: file.type }));
 
-  const url = storageUrl('avatars', path);
-  await updateProfile({ avatar_url: url });
-  return url;
+  // Store the bucket path, never a public link. The avatars bucket is private,
+  // so a viewable link has to be signed and expires on its own.
+  await updateProfile({ avatar_url: path });
+  return storageSignedUrl('avatars', path);
+}
+
+/** A temporary viewable link for the signed-in customer's own avatar. */
+export async function getAvatarUrl(avatarPath) {
+  if (!avatarPath) return null;
+  return storageSignedUrl('avatars', avatarPath).catch(() => null);
 }
 
 /* ---------------------------------------------------------------- addresses */
