@@ -13,8 +13,8 @@
  * the admin dashboard shows a setup screen instead of failing.
  */
 window.BJMEEM_CONFIG = {
-  supabaseUrl: '',      // e.g. 'https://abcdefgh.supabase.co'
-  supabaseAnonKey: '',  // e.g. 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...'
+  supabaseUrl: 'https://pgjwzyshlhqnfojtuwtp.supabase.co',
+  supabaseAnonKey: 'sb_publishable_5Cp6TMZLBoNLAVAyKmwfsA_roAzYhpC',
   siteUrl: typeof location !== 'undefined' ? location.origin : '',
 };
 
